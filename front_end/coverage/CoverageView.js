@@ -21,14 +21,14 @@ Coverage.CoverageView = class extends UI.VBox {
     const toolbar = new UI.Toolbar('coverage-toolbar', toolbarContainer);
 
     this._toggleRecordAction =
-        /** @type {!UI.Action }*/ (UI.actionRegistry.action('coverage.toggle-recording'));
+      /** @type {!UI.Action }*/ (UI.actionRegistry.action('coverage.toggle-recording'));
     this._toggleRecordButton = UI.Toolbar.createActionButton(this._toggleRecordAction);
     toolbar.appendToolbarItem(this._toggleRecordButton);
 
     const mainTarget = SDK.targetManager.mainTarget();
     if (mainTarget && mainTarget.model(SDK.ResourceTreeModel)) {
       const startWithReloadAction =
-          /** @type {!UI.Action }*/ (UI.actionRegistry.action('coverage.start-with-reload'));
+        /** @type {!UI.Action }*/ (UI.actionRegistry.action('coverage.start-with-reload'));
       this._startWithReloadButton = UI.Toolbar.createActionButton(startWithReloadAction);
       toolbar.appendToolbarItem(this._startWithReloadButton);
     }
@@ -37,9 +37,14 @@ Coverage.CoverageView = class extends UI.VBox {
     toolbar.appendToolbarItem(this._clearButton);
 
     toolbar.appendSeparator();
-    const saveButton = new UI.ToolbarButton(Common.UIString('Export...'), 'largeicon-download');
+    const saveButton = new UI.ToolbarButton(Common.UIString('Export Report...'), 'largeicon-download');
     saveButton.addEventListener(UI.ToolbarButton.Events.Click, () => this._exportReport());
     toolbar.appendToolbarItem(saveButton);
+
+    toolbar.appendSeparator();
+    const saveFileButton = new UI.ToolbarButton(Common.UIString('Export File'), 'largeicon-download');
+    saveFileButton.addEventListener(UI.ToolbarButton.Events.Click, () => this._exportIndividualFileReport());
+    toolbar.appendToolbarItem(saveFileButton);
 
     /** @type {?RegExp} */
     this._textFilterRegExp = null;
@@ -53,8 +58,8 @@ Coverage.CoverageView = class extends UI.VBox {
     this._showContentScriptsSetting = Common.settings.createSetting('showContentScripts', false);
     this._showContentScriptsSetting.addChangeListener(this._onFilterChanged, this);
     const contentScriptsCheckbox = new UI.ToolbarSettingCheckbox(
-        this._showContentScriptsSetting, Common.UIString('Include extension content scripts'),
-        Common.UIString('Content scripts'));
+      this._showContentScriptsSetting, Common.UIString('Include extension content scripts'),
+      Common.UIString('Content scripts'));
     toolbar.appendToolbarItem(contentScriptsCheckbox);
 
     this._coverageResultsElement = this.contentElement.createChild('div', 'coverage-results');
@@ -76,9 +81,9 @@ Coverage.CoverageView = class extends UI.VBox {
     if (this._startWithReloadButton) {
       const reloadButton = UI.createInlineButton(UI.Toolbar.createActionButtonForId('coverage.start-with-reload'));
       message = UI.formatLocalized(
-          'Click the record button %s to start capturing coverage.\n' +
-              'Click the reload button %s to reload and start capturing coverage.',
-          [recordButton, reloadButton]);
+        'Click the record button %s to start capturing coverage.\n' +
+        'Click the reload button %s to reload and start capturing coverage.',
+        [recordButton, reloadButton]);
     } else {
       message = UI.formatLocalized('Click the record button %s to start capturing coverage.', [recordButton]);
     }
@@ -130,7 +135,7 @@ Coverage.CoverageView = class extends UI.VBox {
     this._resourceTreeModel = /** @type {?SDK.ResourceTreeModel} */ (mainTarget.model(SDK.ResourceTreeModel));
     if (this._resourceTreeModel) {
       this._resourceTreeModel.addEventListener(
-          SDK.ResourceTreeModel.Events.MainFrameNavigated, this._onMainFrameNavigated, this);
+        SDK.ResourceTreeModel.Events.MainFrameNavigated, this._onMainFrameNavigated, this);
     }
     this._decorationManager = new Coverage.CoverageDecorationManager(this._model);
     this._toggleRecordAction.setToggled(true);
@@ -161,7 +166,7 @@ Coverage.CoverageView = class extends UI.VBox {
     }
     if (this._resourceTreeModel) {
       this._resourceTreeModel.removeEventListener(
-          SDK.ResourceTreeModel.Events.MainFrameNavigated, this._onMainFrameNavigated, this);
+        SDK.ResourceTreeModel.Events.MainFrameNavigated, this._onMainFrameNavigated, this);
       this._resourceTreeModel = null;
     }
     const updatedEntries = await this._model.stop();
@@ -200,8 +205,8 @@ Coverage.CoverageView = class extends UI.VBox {
 
     const percentUnused = total ? Math.round(100 * unused / total) : 0;
     this._statusMessageElement.textContent = Common.UIString(
-        '%s of %s bytes are not used. (%d%%)', Number.bytesToString(unused), Number.bytesToString(total),
-        percentUnused);
+      '%s of %s bytes are not used. (%d%%)', Number.bytesToString(unused), Number.bytesToString(total),
+      percentUnused);
   }
 
   _onFilterChanged() {
@@ -235,6 +240,85 @@ Coverage.CoverageView = class extends UI.VBox {
       return;
     this._model.exportReport(fos);
   }
+
+  async _exportIndividualFileReport() {
+    if (!this._listView && !this._listView._nodeForCoverageInfo)
+      return;
+
+    let selectedNode = null;
+    this._listView._nodeForCoverageInfo.forEach(/** @type !Coverage.CoverageListView.GridNode} */ node => {
+      if (node._selected)
+        selectedNode = node;
+    });
+
+    if (selectedNode && selectedNode._coverageInfo){
+      const urlInfo = selectedNode._coverageInfo;
+      const url = urlInfo.url();
+
+      const fos = new Bindings.FileOutputStream();
+      const accepted = await fos.open(url);
+      if (!accepted)
+        return;
+
+      // For .html resources, multiple scripts share URL, but have different offsets.
+      let useFullText = false;
+      for (const info of urlInfo._coverageInfoByLocation.values()) {
+        if (info._lineOffset || info._columnOffset) {
+          useFullText = !!url;
+          break;
+        }
+      }
+
+      let fullText = null;
+      if (useFullText) {
+        const resource = SDK.ResourceTreeModel.resourceForURL(url);
+        fullText = resource ? new TextUtils.Text(await resource.requestContent()) : null;
+      }
+      // We have full text for this resource, resolve the offsets using the text line endings.
+      if (fullText) {
+        const textByteArray = new TextEncoder('utf-8').encode(fullText.value());
+        const usedBytes = new Uint8Array(urlInfo._usedSize);
+        let usedBytesCounter = 0;
+        for (const info of urlInfo._coverageInfoByLocation.values()) {
+          const offset = fullText ? fullText.offsetFromPosition(info._lineOffset, info._columnOffset) : 0;
+          let start = 0;
+          for (const segment of info._segments) {
+            if (segment.count){
+              usedBytes.set(textByteArray.slice(start + offset, segment.end + offset), usedBytesCounter);
+              usedBytesCounter += segment.end - start;
+            } else {
+              start = segment.end;
+            }
+          }
+        }
+
+        // Write decoded bytes to file
+        await fos.write(new TextDecoder('utf-8').decode(usedBytes));
+        return;
+      }
+
+      // Fall back to the per-script operation.
+      for (const info of urlInfo._coverageInfoByLocation.values()) {
+        let start = 0;
+
+        const textByteArray = new TextEncoder('utf-8').encode(await info.contentProvider().requestContent());
+        const usedBytes = new Uint8Array(urlInfo._usedSize);
+        let usedBytesCounter = 0;
+        for (const segment of info._segments) {
+          if (segment.count){
+            usedBytes.set(textByteArray.slice(start , segment.end), usedBytesCounter);
+            usedBytesCounter += segment.end - start;
+          } else {
+            start = segment.end;
+          }
+        }
+        // Write decoded bytes to file
+        await fos.write(new TextDecoder('utf-8').decode(usedBytes));
+      }
+
+    }
+  }
+
 };
 
 Coverage.CoverageView._extensionBindingsURLPrefix = 'extensions::';
@@ -252,8 +336,8 @@ Coverage.CoverageView.ActionDelegate = class {
   handleAction(context, actionId) {
     const coverageViewId = 'coverage';
     UI.viewManager.showView(coverageViewId)
-        .then(() => UI.viewManager.view(coverageViewId).widget())
-        .then(widget => this._innerHandleAction(/** @type !Coverage.CoverageView} */ (widget), actionId));
+      .then(() => UI.viewManager.view(coverageViewId).widget())
+      .then(widget => this._innerHandleAction(/** @type !Coverage.CoverageView} */ (widget), actionId));
 
     return true;
   }
